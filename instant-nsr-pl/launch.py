@@ -22,7 +22,6 @@ def main():
     group.add_argument('--validate', action='store_true')
     group.add_argument('--test', action='store_true')
     group.add_argument('--predict', action='store_true')
-    # group.add_argument('--export', action='store_true') # TODO: a separate export action
 
     parser.add_argument('--exp_dir', default='./exp')
     parser.add_argument('--runs_dir', default='./runs')
@@ -67,35 +66,29 @@ def main():
     system = systems.make(config.system.name, config, load_from_checkpoint=None if not args.resume_weights_only else args.resume)
 
     callbacks = []
-    if args.train:
-        callbacks += [
-            ModelCheckpoint(
-                dirpath=config.ckpt_dir,
-                **config.checkpoint
-            ),
-            LearningRateMonitor(logging_interval='step'),
-            CodeSnapshotCallback(
-                config.code_dir, use_version=False
-            ),
-            ConfigSnapshotCallback(
-                config, config.config_dir, use_version=False
-            ),
-            CustomProgressBar(refresh_rate=1),
-        ]
+    callbacks += [
+        ModelCheckpoint(
+            dirpath=config.ckpt_dir,
+            **config.checkpoint
+        ),
+        LearningRateMonitor(logging_interval='step'),
+        CodeSnapshotCallback(
+            config.code_dir, use_version=False
+        ),
+        ConfigSnapshotCallback(
+            config, config.config_dir, use_version=False
+        ),
+        CustomProgressBar(refresh_rate=1),
+    ]
 
+    # Logger
     loggers = []
-    if args.train:
-        loggers += [
-            TensorBoardLogger(args.runs_dir, name=config.name, version=config.trial_name),
-            CSVLogger(config.exp_dir, name=config.trial_name, version='csv_logs')
-        ]
+    loggers += [
+        TensorBoardLogger(args.runs_dir, name=config.name, version=config.trial_name),
+        CSVLogger(config.exp_dir, name=config.trial_name, version='csv_logs')
+    ]
     
-    if sys.platform == 'win32':
-        # does not support multi-gpu on windows
-        strategy = 'dp'
-        assert n_gpus == 1
-    else:
-        strategy = 'ddp_find_unused_parameters_false'
+    strategy = 'ddp_find_unused_parameters_false'
     
     trainer = Trainer(
         devices=n_gpus,
@@ -106,19 +99,9 @@ def main():
         **config.trainer
     )
 
-    if args.train:
-        if args.resume and not args.resume_weights_only:
-            # FIXME: different behavior in pytorch-lighting>1.9 ?
-            trainer.fit(system, datamodule=dm, ckpt_path=args.resume)
-        else:
-            trainer.fit(system, datamodule=dm)
-        trainer.test(system, datamodule=dm)
-    elif args.validate:
-        trainer.validate(system, datamodule=dm, ckpt_path=args.resume)
-    elif args.test:
-        trainer.test(system, datamodule=dm, ckpt_path=args.resume)
-    elif args.predict:
-        trainer.predict(system, datamodule=dm, ckpt_path=args.resume)
+    trainer.fit(system, datamodule=dm)
+    trainer.test(system, datamodule=dm)
+    print('Finished!')
 
 
 if __name__ == '__main__':
