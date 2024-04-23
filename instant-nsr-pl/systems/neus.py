@@ -1,10 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_efficient_distloss import flatten_eff_distloss
 
-import pytorch_lightning as pl
-from pytorch_lightning.utilities.rank_zero import rank_zero_info, rank_zero_debug
 
 import models
 from models.utils import cleanup
@@ -84,89 +81,6 @@ class NeuSSystem(BaseSystem):
             'rgb': rgb,
             'fg_mask': fg_mask
         })      
-    
-    def training_step(self, batch, batch_idx):
-        out = self(batch)
-
-        loss = 0.
-
-        # update train_num_rays
-        if self.config.model.dynamic_ray_sampling:
-            train_num_rays = int(self.train_num_rays * (self.train_num_samples / out['num_samples_full'].sum().item()))        
-            self.train_num_rays = min(int(self.train_num_rays * 0.9 + train_num_rays * 0.1), self.config.model.max_train_num_rays)
-
-        loss_rgb_mse = F.mse_loss(out['comp_rgb_full'][out['rays_valid_full'][...,0]], batch['rgb'][out['rays_valid_full'][...,0]])
-        self.log('train/loss_rgb_mse', loss_rgb_mse)
-        loss += loss_rgb_mse * self.C(self.config.system.loss.lambda_rgb_mse)
-
-        loss_rgb_l1 = F.l1_loss(out['comp_rgb_full'][out['rays_valid_full'][...,0]], batch['rgb'][out['rays_valid_full'][...,0]])
-        self.log('train/loss_rgb', loss_rgb_l1)
-        loss += loss_rgb_l1 * self.C(self.config.system.loss.lambda_rgb_l1)        
-
-        loss_eikonal = ((torch.linalg.norm(out['sdf_grad_samples'], ord=2, dim=-1) - 1.)**2).mean()
-        self.log('train/loss_eikonal', loss_eikonal)
-        loss += loss_eikonal * self.C(self.config.system.loss.lambda_eikonal)
-        
-        opacity = torch.clamp(out['opacity'].squeeze(-1), 1.e-3, 1.-1.e-3)
-        loss_mask = binary_cross_entropy(opacity, batch['fg_mask'].float())
-        self.log('train/loss_mask', loss_mask)
-        loss += loss_mask * (self.C(self.config.system.loss.lambda_mask) if self.dataset.has_mask else 0.0)
-
-        loss_opaque = binary_cross_entropy(opacity, opacity)
-        self.log('train/loss_opaque', loss_opaque)
-        loss += loss_opaque * self.C(self.config.system.loss.lambda_opaque)
-
-        loss_sparsity = torch.exp(-self.config.system.loss.sparsity_scale * out['sdf_samples'].abs()).mean()
-        self.log('train/loss_sparsity', loss_sparsity)
-        loss += loss_sparsity * self.C(self.config.system.loss.lambda_sparsity)
-
-        if self.C(self.config.system.loss.lambda_curvature) > 0:
-            assert 'sdf_laplace_samples' in out, "Need geometry.grad_type='finite_difference' to get SDF Laplace samples"
-            loss_curvature = out['sdf_laplace_samples'].abs().mean()
-            self.log('train/loss_curvature', loss_curvature)
-            loss += loss_curvature * self.C(self.config.system.loss.lambda_curvature)
-
-        # distortion loss proposed in MipNeRF360
-        # an efficient implementation from https://github.com/sunset1995/torch_efficient_distloss
-        if self.C(self.config.system.loss.lambda_distortion) > 0:
-            loss_distortion = flatten_eff_distloss(out['weights'], out['points'], out['intervals'], out['ray_indices'])
-            self.log('train/loss_distortion', loss_distortion)
-            loss += loss_distortion * self.C(self.config.system.loss.lambda_distortion)    
-
-        if self.config.model.learned_background and self.C(self.config.system.loss.lambda_distortion_bg) > 0:
-            loss_distortion_bg = flatten_eff_distloss(out['weights_bg'], out['points_bg'], out['intervals_bg'], out['ray_indices_bg'])
-            self.log('train/loss_distortion_bg', loss_distortion_bg)
-            loss += loss_distortion_bg * self.C(self.config.system.loss.lambda_distortion_bg)        
-
-        losses_model_reg = self.model.regularizations(out)
-        for name, value in losses_model_reg.items():
-            self.log(f'train/loss_{name}', value)
-            loss_ = value * self.C(self.config.system.loss[f"lambda_{name}"])
-            loss += loss_
-        
-        self.log('train/inv_s', out['inv_s'], prog_bar=True)
-
-        for name, value in self.config.system.loss.items():
-            if name.startswith('lambda'):
-                self.log(f'train_params/{name}', self.C(value))
-
-        self.log('train/num_rays', float(self.train_num_rays), prog_bar=True)
-
-        return {
-            'loss': loss
-        }
-    
-    """
-    # aggregate outputs from different devices (DP)
-    def training_step_end(self, out):
-        pass
-    """
-    
-    """
-    # aggregate outputs from different iterations
-    def training_epoch_end(self, out):
-        pass
-    """
     
     def validation_step(self, batch, batch_idx):
         out = self(batch)

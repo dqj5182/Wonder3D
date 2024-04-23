@@ -1,4 +1,4 @@
-pretrained_model_name_or_path: 'flamehaze1115/wonder3d-v1.0' # or './ckpts'
+pretrained_model_name_or_path: './ckpts' #'flamehaze1115/wonder3d-v1.0'
 revision: null
 validation_dataset:
   root_dir: "./example_images" # the folder path stores testing images
